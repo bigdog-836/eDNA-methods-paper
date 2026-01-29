@@ -16,7 +16,7 @@ library(tibble)
 library(ggplot2)
 library(lme4)
 library(lmerTest)
-
+library(DHARMa)
 
 # For plotting ellipses in PCOA etc
 library(ggforce)
@@ -335,4 +335,185 @@ boxplots <-(boxplot.SR+ theme(plot.margin = unit(c(0,0,20,0), "pt"))) / (boxplot
 ##boxplots <- boxplot.SR / boxplot.PD / boxplot.reads + plot_layout(guides = "keep")
 boxplots
 ggsave(filename = file.path("Figures", "alpha_boxplot_fish_location.png"), plot = boxplots, bg = "white", dpi = 600) 
+
+### conduct negative binomial GLM to determine differences in SR between locations
+# fit negative binomial model
+model_sr <- glmmTMB(
+  SR ~ method + sampleLocation + method:sampleLocation,
+  family = nbinom2,
+  data = metadata
+)
+print(model_sr)
+
+#test inmteraction
+m0 <- glmmTMB(SR ~ method + sampleLocation, family = nbinom2, data = metadata)
+m1 <- glmmTMB(SR ~ method * sampleLocation, family = nbinom2, data = metadata)
+
+anova(m0, m1)   # likelihood ratio test
+
+emm <- emmeans(m1, ~ method | sampleLocation, type = "response")
+pairs(emm, adjust = "tukey")
+
+emm <- emmeans(m1, ~ method | sampleLocation, type = "response")
+emm_df <- as.data.frame(confint(emm))  # adds CI columns
+
+# detect CI column names (emmeans varies by version)
+if (all(c("lower.CL", "upper.CL") %in% names(emm_df))) {
+  emm_df <- emm_df %>% mutate(lo = lower.CL, hi = upper.CL)
+} else if (all(c("asymp.LCL", "asymp.UCL") %in% names(emm_df))) {
+  emm_df <- emm_df %>% mutate(lo = asymp.LCL, hi = asymp.UCL)
+} else {
+  stop("Could not find CI columns in emm_df. Run: names(emm_df)")
+}
+
+p_emm <- ggplot(emm_df, aes(x = method, y = response)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.15) +
+  facet_wrap(~ sampleLocation, nrow = 1) +
+  labs(x = "Sampling method", y = "Estimated mean species richness (SR)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_emm
+
+p_emm_log <- p_emm + scale_y_log10() +
+  labs(y = "Estimated mean SR (log10 scale)")
+
+p_emm_log <- ggplot(emm_df, aes(x = method, y = response)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.15) +
+  facet_wrap(~ sampleLocation, nrow = 1) +
+  labs(x = "Sampling method", y = "Estimated mean species richness (SR)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_emm_log
+
+res <- simulateResiduals(bmm_fit)
+plot(res)
+testDispersion(res)
+testZeroInflation(res)
+
+###Gamma log-link glm on PD
+# The previous Gamma GLM failed due to non-positive PD values (Gamma requires y > 0).
+# Step 1: Inspect PD for non-positive and NA values
+pd_vals <- metadata$PD
+n_na <- sum(is.na(pd_vals))
+n_nonpos <- sum(pd_vals <= 0, na.rm = TRUE)
+print(n_na)
+print(n_nonpos)
+
+# Step 2: Create a clean dataset with PD > 0 and non-missing
+metadata_pd_pos <- subset(metadata, !is.na(PD) & PD > 0)
+print(nrow(metadata_pd_pos))
+
+summary(metadata_pd_pos$PD)
+stopifnot(all(metadata_pd_pos$PD > 0))
+
+
+# Step 3: Fit Gamma GLM with log link on the cleaned data
+#model_pd_gamma <- glm(PD ~ method + sampleLocation + method*sampleLocation, data = metadata_pd_pos, family = Gamma(link = "log"))
+
+model_pd_gamma <- glmmTMB(
+  PD ~ method * sampleLocation,
+  family = Gamma(link = "log"),
+  data = metadata_pd_pos
+)
+
+
+print(summary(model_pd_gamma))
+
+m0 <- glmmTMB(PD ~ method + sampleLocation,
+              family = Gamma(link="log"),
+              data = metadata_pd_pos)
+
+m1 <- glmmTMB(PD ~ method * sampleLocation,
+              family = Gamma(link="log"),
+              data = metadata_pd_pos)
+
+anova(m0, m1)
+
+emm_pd <- emmeans(m1, ~ method | sampleLocation, type = "response")
+pairs(emm_pd, adjust = "tukey")
+
+sim <- simulateResiduals(model_pd_gamma)
+plot(sim)
+testDispersion(sim)
+
+#DHARMa nonparametric dispersion test via sd of residuals fitted vs. simulated
+
+#data:  simulationOutput
+#dispersion = 0.82912, p-value = 0.448
+#alternative hypothesis: two.sided
+
+#There is no evidence of overdispersion or underdispersion.
+
+plot(simulateResiduals(m1))
+
+
+# Step 4: Type II/III tests
+print(Anova(model_pd_gamma, type = 2))
+print(Anova(model_pd_gamma, type = 3))
+alias(model_pd_gamma)
+
+# Step 5: EMMs and CLD on response scale
+emm_pd_gamma <- emmeans(model_pd_gamma, ~ method, type = "response")
+print(emm_pd_gamma)
+print(pairs(emm_pd_gamma, adjust = "tukey"))
+cld_pd_gamma <- cld(emm_pd_gamma, Letters = letters, adjust = "fdr")
+print(cld_pd_gamma)
+
+# Step 6: Basic residual diagnostics
+par(mfrow = c(1,2))
+plot(fitted(model_pd_gamma), resid(model_pd_gamma, type = "pearson"),
+     xlab = "Fitted values", ylab = "Pearson residuals", main = "Residuals vs Fitted (Gamma)")
+abline(h = 0, lty = 2, col = "red")
+qqnorm(resid(model_pd_gamma, type = "deviance"), main = "QQ of deviance residuals (Gamma)")
+qqline(resid(model_pd_gamma, type = "deviance"))
+par(mfrow = c(1,1))
+
+# Fit Gamma GLM with log link
+model_pd_gamma <- glm(PD.x ~ method + sampleLocation + method*sampleLocation, data = metadata, family = Gamma(link = "log"))
+print("Fitted Gamma GLM: PD ~ method (log link)")
+print(summary(model_pd_gamma))
+
+# Model fit diagnostics
+od_gamma <- check_overdispersion(model_pd_gamma)
+print(od_gamma)
+
+# DHARMa residual diagnostics for GLM
+res_sim <- simulateResiduals(model_pd_gamma, n = 2000)
+plot(res_sim)
+print("Plotted DHARMa residual diagnostics for Gamma GLM.")
+
+# Emmeans on response scale (natural with log link)
+emm_gamma <- emmeans(model_pd_gamma, ~ method, type = "response")
+print("Estimated marginal means for PD by method (Gamma GLM; response scale):")
+print(emm_gamma)
+
+# Tukey pairwise comparisons and ratios (on response scale under log link these reflect multiplicative effects)
+pairs_gamma <- contrast(emm_gamma, method = "pairwise", adjust = "tukey")
+print("Tukey-adjusted pairwise comparisons (Gamma GLM; differences on log scale, ratios shown):")
+print(summary(pairs_gamma, infer = c(TRUE, TRUE)))
+
+# Also show ratios explicitly
+pairs_tbl <- summary(pairs_gamma)
+pairs_tbl$ratio <- exp(pairs_tbl$estimate)
+print("Pairwise ratios (exp of log-differences):")
+print(pairs_tbl)
+# Reprint pairwise comparisons cleanly on the response scale and add CLD letters
+
+emm_gamma <- emmeans(model_pd_gamma, ~ method, type = "response")
+
+pairs_gamma_resp <- summary(contrast(emm_gamma, method = "pairwise", adjust = "tukey"), infer = c(TRUE, TRUE))
+print("Pairwise comparisons (response scale ratios) with 95% CIs and Tukey-adjusted p:")
+print(pairs_gamma_resp)
+
+cld_gamma <- cld(emm_gamma, Letters = letters, adjust = "tukey")
+print("Compact Letter Display for methods (Gamma GLM):")
+print(cld_gamma)
+
+##############################################################
+##Beta Diversity
+#############################################################
 
