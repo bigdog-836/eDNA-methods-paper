@@ -262,6 +262,30 @@ write.table(frequent_asvs, file = "Top 10 frequent zotus", quote = FALSE)
 # SR/PD/Total read BOXPLOTS 
 ##########################
 
+# format data to fit the analysis
+is.binary(phylo_tree)
+
+alpha_table <- as.data.frame(t(count_table))
+all(sort(phylo_tree$tip.label) == sort(colnames(alpha_table)))
+all(phylo_tree$tip.label == colnames(alpha_table))
+phylo_tree_clean <- match.phylo.comm(phy = phylo_tree, comm = alpha_table)$phy
+alpha_table_clean <- match.phylo.comm(phy = phylo_tree, comm = alpha_table)$comm
+all(phylo_tree_clean$tip.label == colnames(alpha_table_clean))
+
+# calculate Faith's PD and species richness (SR)
+alpha.PD <- pd(samp = alpha_table_clean, tree = phylo_tree_clean, include.root = FALSE)
+
+# check SR and PD correlation
+cor.test(alpha.PD$PD, alpha.PD$SR)
+plot(alpha.PD$PD, alpha.PD$SR, xlab = 'Phylogenetic Diversity', ylab = 'Species Richness', pch = 16)
+
+rownames(metadata) <- metadata$sample
+
+# add PD and SR to metadata
+metadata <- merge(metadata, alpha.PD[c("PD", "SR")], by = "row.names", all.x = TRUE)
+rownames(metadata) <- metadata$Row.names
+metadata$Row.names <- NULL
+
 # prepare for plotting
 metadata <- metadata %>% mutate(location=gsub("_.*","",location_by_method)) %>% 
   mutate(method=gsub(".*_","",location_by_method))
