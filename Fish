@@ -513,6 +513,74 @@ cld_gamma <- cld(emm_gamma, Letters = letters, adjust = "tukey")
 print("Compact Letter Display for methods (Gamma GLM):")
 print(cld_gamma)
 
+
+################################
+##Beta Diversity
+###############################
+##With Sediment
+## Visualise shared/unique ASVs
+# combine metadata and count_table to group per location
+location_table <- t(count_table) %>%
+  as.data.frame() %>%
+  mutate(sample = rownames(.)) %>%
+  right_join(metadata %>% dplyr::select(sample, method), by = "sample") %>%
+  group_by(method) %>%
+  summarise(across(-sample, ~ as.integer(sum(.x) > 0))) %>%
+  column_to_rownames("method") %>%
+  t() %>% as.data.frame()
+
+# visualise through UpSet
+upset(location_table, nsets = 11, nintersects = 30, order.by = "freq", text.scale = 1.2,
+      mainbar.y.label = "Number of ASVs", sets.x.label = "Total number of ASVs")
+png(filename = file.path("Figures", "upsetmethod_fish.png"), width = 10, height = 6, units = "in", res = 300)
+upset(location_table, nsets = 11, nintersects = 30, order.by = "freq", text.scale = 1.2,
+      mainbar.y.label = "Number of ASVs", sets.x.label = "Total number of ASVs")
+dev.off()
+
+# visualise through network graph
+# compute shared ASVs between locations
+shared_asvs <- t(location_table) %*% as.matrix(location_table)
+
+# create network graph
+net <- graph_from_adjacency_matrix(shared_asvs, mode = "undirected", weighted = TRUE, diag = FALSE)
+
+# circular layout with optimized spacing
+ggraph(net, layout = "linear", circular = TRUE) +
+  geom_edge_arc(aes(width = weight, alpha = weight), color = "steelblue", strength = 0.2, show.legend = FALSE) +
+  geom_node_point(aes(size = 10), fill = "#E1F5FE", shape = 21, color = "white", stroke = 0.5, show.legend = FALSE) +
+  geom_node_text(aes(label = name, angle = -((-node_angle(x, y) + 90) %% 180) + 90), size = 3, hjust = "outward", vjust = "outward", repel = FALSE) +
+  scale_edge_width(range = c(0.5, 3), name = "Shared ASVs") +
+  scale_size_continuous(range = c(4, 12), name = "Degree") +
+  theme_void() +
+  theme(legend.position = "bottom", plot.margin = unit(c(1,1,1,1), "cm"), panel.background = element_rect(fill = "white", color = NA)) +
+  coord_fixed(clip = "off")
+ggsave(filename = file.path("Figures", "network_graph.png"), plot = last_plot(), bg = "white", dpi = 300) 
+
+# reformat data for Bipartite Network Graph
+edge_list <- location_table %>%
+  rownames_to_column("ASV") %>%
+  pivot_longer(cols = -ASV, names_to = "Location", values_to = "Present") %>%
+  filter(Present == 1) %>%
+  dplyr::select(-Present)
+
+#create network
+net <- graph_from_data_frame(edge_list, directed = FALSE)
+
+# assign node types and scale
+V(net)$type <- ifelse(V(net)$name %in% colnames(location_table), "Location", "ASV")
+V(net)$degree <- igraph::degree(net)
+
+# visualise using bipartite network graph
+ggraph(net, layout = "fr") +
+  geom_edge_link(alpha = 0.1, color = "gray80") +
+  geom_node_point(aes(size = degree, color = type), show.legend = TRUE) +
+  geom_node_text(aes(label = name, color = type), data = . %>% filter(type == "Location"), repel = TRUE, size = 3) +
+  scale_color_manual(values = c("Location" = "steelblue", "ASV" = "grey40")) +
+  scale_size(range = c(1, 8)) +
+  theme_void()
+ggsave(filename = file.path("Figures", "bipartite_network_graph.png"), plot = last_plot(), bg = "white", dpi = 300) 
+
+
 ##############################################################
 ##Beta Diversity
 #############################################################
