@@ -38,7 +38,7 @@ count_table <- read.table(file.path("Anya_fish_heatmap.txt"), header = TRUE, sep
 phylo_tree <- read.nexus(file.path("phylo_asvs-tree.tree"))
 taxonomy <- read.table(file.path("GJ_taxo_fish_methods.txt"), header = TRUE, sep = '\t', row.names = 1, check.names = FALSE, comment.char = '')
 
-## ALANA ADDITIONS: what we care about is differences by method
+## We care about is differences by method
 ## but site will also have an influence, so we'll create a new
 ## column which is location_by_method. We will also ditch 
 ## sponge type 2 and rename sponge type 1 to sponge.
@@ -51,7 +51,7 @@ metadata <- metadata %>% mutate(method=ifelse(method=="SpongeTypeOne","Sponge",m
 
 rownames(metadata) <- NULL
 
-## ALANA ADDITIONS: Ryan has already ditched SpongeType2 from
+## Already ditched SpongeType2 from
 ## this file, so we just need to rename SpongeType1 to Sponge
 count_location <- count_table %>%
   t() %>% as.data.frame() %>%
@@ -73,7 +73,7 @@ for (col in column_names) {
   count_location[[col]] <- ifelse(count_location[[col]] == 1, col, count_location[[col]])
 }
 
-####NEW CODE ALANA ADDED TO DO PLOT OF PROPORTION ZOTUS FOUND BY METHOD
+####NEW CODE ADDED TO DO PLOT OF PROPORTION ZOTUS FOUND BY METHOD
 Leith_present <- NULL
 for (i in 1:dim(count_for_method_comparison)[1]) {
   if(1 %in% count_for_method_comparison[i,(which(grepl("Leith",colnames(count_for_method_comparison))))]) {
@@ -128,3 +128,64 @@ ggplot(taxa_proportion) + geom_tile(mapping=aes(x=method,y=site,fill=`proportion
 
 lm_proportion <- lm(`proportion of ZOTUs at each site found by method` ~ method, taxa_proportion)
 summary(lm_proportion)
+
+
+##Beta Mixed Model
+# 1) Standardize column names (avoid backticks pain)
+# taxa_proportion should have columns: sample, proportion of ZOTUs..., site, method
+tp <- taxa_proportion %>%
+  rename(prop = `proportion of ZOTUs at each site found by method`) %>%
+  mutate(
+    prop = as.numeric(prop),
+    method = factor(method),
+    site = factor(site)
+  ) %>%
+  filter(!is.na(prop))
+
+# 2) Transform away from 0/1 for beta regression
+# Smithson & Verkuilen style shrink toward (0,1)
+n <- nrow(tp)
+tp <- tp %>%
+  mutate(prop_beta = (prop * (n - 1) + 0.5) / n)
+
+# Quick sanity check
+range(tp$prop, na.rm = TRUE)
+range(tp$prop_beta, na.rm = TRUE)  # should be strictly between 0 and 1
+
+# 3) Fit beta mixed model (site random intercept)
+bmm_fit <- glmmTMB(
+  prop_beta ~ method + (1 | site),
+  family = beta_family(link = "logit"),
+  data = tp
+)
+
+cat("\nBeta mixed model summary:\n")
+print(summary(bmm_fit))
+
+cat("\nANOVA (Type II Wald) for method:\n")
+print(car::Anova(bmm_fit, type = 2))
+
+# 4) Estimated marginal means on response scale + Tukey comparisons
+emm_bmm <- emmeans(bmm_fit, ~ method, type = "response")
+
+cat("\nEstimated marginal means (response scale):\n")
+print(emm_bmm)
+
+cat("\nPairwise comparisons (Tukey-adjusted, response scale):\n")
+print(pairs(emm_bmm, adjust = "tukey"))
+
+# 5) Plot EMMs with 95% CI on response scale
+emm_df <- as.data.frame(emm_bmm)
+
+p_bmm <- ggplot(emm_df, aes(x = method, y = response, ymin = asymp.LCL, ymax = asymp.UCL, fill = method)) +
+  geom_col(alpha = 0.85, color = "grey20") +
+  geom_errorbar(width = 0.15) +
+  theme_minimal() +
+  labs(
+    title = "Mixed-effects beta regression: Estimated means by method",
+    y = "Estimated proportion (mean)",
+    x = "Method"
+  ) +
+  theme(legend.position = "none")
+
+print(p_bmm)
