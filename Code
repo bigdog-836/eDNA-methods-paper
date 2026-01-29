@@ -1,0 +1,130 @@
+# Loading libraries we need in
+# needed for reading in and manipulating data
+library(ape)
+library(tidyverse)
+library(MASS)
+library(car)
+library(performance)
+library(emmeans)
+library(multcomp)
+library(UpSetR)
+library(ggraph)
+library(igraph)
+library(glmmTMB)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+
+
+# For plotting ellipses in PCOA etc
+library(ggforce)
+# For text labels on PCOA plots
+library(ggrepel)
+# necessary for some of the alpha diversity stats etc
+library(picante)
+# allows plots to be stacked
+library(patchwork)
+# For permanova
+library(indicspecies)
+
+##Set working directory
+setwd("C:/Documents and Settings/Admin PC/My Documents/eDNA/Fish/Japan_updated/")
+
+## read data into R
+metadata <- read.table(file.path("metadata_anyafish170625.txt"), header = TRUE, sep = '\t', row.names = 1, check.names = FALSE, comment.char = '')
+count_table <- read.table(file.path("Anya_fish_heatmap.txt"), header = TRUE, sep = '\t', row.names = 1, check.names = FALSE, comment.char = '')
+phylo_tree <- read.nexus(file.path("phylo_asvs-tree.tree"))
+taxonomy <- read.table(file.path("GJ_taxo_fish_methods.txt"), header = TRUE, sep = '\t', row.names = 1, check.names = FALSE, comment.char = '')
+
+## ALANA ADDITIONS: what we care about is differences by method
+## but site will also have an influence, so we'll create a new
+## column which is location_by_method. We will also ditch 
+## sponge type 2 and rename sponge type 1 to sponge.
+## Because of this, instead of using rownames to make a new
+## column called sample, we'll use the columns in the dataframe
+metadata <- metadata %>% mutate(method=ifelse(method=="SpongeTypeOne","Sponge",method)) %>% 
+  mutate(sample=paste(site_name,location,paste(method,extraction_number,sep=""), sep="_")) %>% 
+  mutate(location_by_method=paste(location,method,sep="_")) %>%
+  dplyr::select(sample,location_by_method)
+
+rownames(metadata) <- NULL
+
+## ALANA ADDITIONS: Ryan has already ditched SpongeType2 from
+## this file, so we just need to rename SpongeType1 to Sponge
+count_location <- count_table %>%
+  t() %>% as.data.frame() %>%
+  rownames_to_column("sample") %>% 
+  mutate(sample=gsub("SpongeTypeOne","Sponge",sample)) %>%
+  left_join(metadata, by = "sample") %>%
+  dplyr::select(-sample) %>%
+  group_by(location_by_method) %>%
+  summarise(across(everything(), sum, na.rm = TRUE)) %>%
+  mutate(across(-location_by_method, ~ if_else(.x > 0, 1, 0))) %>%
+  column_to_rownames("location_by_method") %>%
+  t() %>% as.data.frame()
+
+count_for_method_comparison <- count_location
+
+count_location[count_location == 0] <- NA
+column_names <- names(count_location)
+for (col in column_names) {
+  count_location[[col]] <- ifelse(count_location[[col]] == 1, col, count_location[[col]])
+}
+
+####NEW CODE ALANA ADDED TO DO PLOT OF PROPORTION ZOTUS FOUND BY METHOD
+Leith_present <- NULL
+for (i in 1:dim(count_for_method_comparison)[1]) {
+  if(1 %in% count_for_method_comparison[i,(which(grepl("Leith",colnames(count_for_method_comparison))))]) {
+    Leith_present <- c(Leith_present, 1) } else {
+      Leith_present <- c(Leith_present, 0)
+    }
+}
+
+Leith <- colSums(count_for_method_comparison[which(Leith_present==1),(which(grepl("Leith",colnames(count_for_method_comparison))))])/sum(Leith_present)
+
+Silverstream_present <- NULL
+for (i in 1:dim(count_for_method_comparison)[1]) {
+  if(1 %in% count_for_method_comparison[i,(which(grepl("Silverstream",colnames(count_for_method_comparison))))]) {
+    Silverstream_present <- c(Silverstream_present, 1) } else {
+      Silverstream_present <- c(Silverstream_present, 0)
+    }
+}
+
+Silverstream <- colSums(count_for_method_comparison[which(Silverstream_present==1),(which(grepl("Silverstream",colnames(count_for_method_comparison))))])/sum(Silverstream_present)
+
+Waitati_present <- NULL
+for (i in 1:dim(count_for_method_comparison)[1]) {
+  if(1 %in% count_for_method_comparison[i,(which(grepl("Waitati",colnames(count_for_method_comparison))))]) {
+    Waitati_present <- c(Waitati_present, 1) } else {
+      Waitati_present <- c(Waitati_present, 0)
+    }
+}
+
+Waitati <- colSums(count_for_method_comparison[which(Waitati_present==1),(which(grepl("Waitati",colnames(count_for_method_comparison))))])/sum(Waitati_present)
+
+taxa_proportion <- rbind(cbind(names(Leith),Leith), 
+                         cbind(names(Silverstream),Silverstream),
+                         cbind(names(Waitati), Waitati))
+
+colnames(taxa_proportion) <- c("sample","proportion of ZOTUs at each site found by method")
+
+taxa_proportion <- as_tibble(taxa_proportion)
+taxa_proportion$`proportion of ZOTUs at each site found by method` <- as.numeric(taxa_proportion$`proportion of ZOTUs at each site found by method`)
+
+taxa_proportion <- taxa_proportion %>% mutate(site=gsub("_.*","",sample)) %>% mutate(method=gsub(".*_","",sample))
+
+ggplot(taxa_proportion) + geom_point(mapping=aes(x=method,y=`proportion of ZOTUs at each site found by method`,fill=site), pch=21, size=3)
+
+ggplot(taxa_proportion) + geom_tile(mapping=aes(x=method,y=site,fill=`proportion of ZOTUs at each site found by method`), color="black") +
+  labs(fill="proportion of ZOTUs at each\nsite found by method") +
+  scale_fill_viridis()
+
+ggplot(taxa_proportion) + geom_tile(mapping=aes(x=method,y=site,fill=`proportion of ZOTUs at each site found by method`), color="black") +
+  labs(fill="proportion of ZOTUs at each\nsite found by method") +
+  scale_fill_viridis() +
+  geom_text(mapping=aes(label=round(`proportion of ZOTUs at each site found by method`,2),x=method,y=site,))
+
+lm_proportion <- lm(`proportion of ZOTUs at each site found by method` ~ method, taxa_proportion)
+summary(lm_proportion)
