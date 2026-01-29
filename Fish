@@ -189,3 +189,71 @@ p_bmm <- ggplot(emm_df, aes(x = method, y = response, ymin = asymp.LCL, ymax = a
   theme(legend.position = "none")
 
 print(p_bmm)
+
+##Summary stats
+
+# Renaming count table names
+names(count_table) <- gsub("SpongeTypeOne","Sponge",names(count_table))
+
+## total number of reads and ASVs
+sum(count_table)
+nrow(count_table)
+ncol(count_table)
+
+## total number of reads per sample, mean/sd per dataset, and which samples have the minimum and maximum number of reads
+metadata$final_read_count <- colSums(count_table)[metadata$sample]
+mean(metadata$final_read_count, na.rm = TRUE)
+sd(metadata$final_read_count, na.rm = TRUE) / sqrt(sum(!is.na(metadata$final_read_count)))
+min(metadata$final_read_count)
+metadata$sample[metadata$final_read_count == min(metadata$final_read_count)]
+max(metadata$final_read_count)
+metadata$sample[metadata$final_read_count == max(metadata$final_read_count)]
+
+## number of ASVs per sample (rows in count_table with more than 0 reads), mean/sd per dataset, and which samples have min/max no of ASVs
+metadata$final_asv_count <- colSums(count_table > 0)[metadata$sample]
+mean(metadata$final_asv_count, na.rm = TRUE)
+sd(metadata$final_asv_count, na.rm = TRUE) / sqrt(sum(!is.na(metadata$final_asv_count)))
+min(metadata$final_asv_count)
+metadata$sample[metadata$final_asv_count == min(metadata$final_asv_count)]
+max(metadata$final_asv_count)
+metadata$sample[metadata$final_asv_count == max(metadata$final_asv_count)]
+
+## average number of reads and ASVs per location_by_method
+location_by_method_info <- metadata %>%
+  group_by(location_by_method) %>%
+  summarise(mean_reads = mean(final_read_count, na.rm = TRUE),
+            se_reads = sd(final_read_count, na.rm = TRUE) / sqrt(n()),
+            mean_asvs = mean(final_asv_count, na.rm = TRUE),
+            se_asvs = sd(final_asv_count, na.rm = TRUE) / sqrt(n()))
+
+# reads info
+min(location_by_method_info$mean_reads)
+location_by_method_info$location_by_method[location_by_method_info$mean_reads == min(location_by_method_info$mean_reads)]
+max(location_by_method_info$mean_reads)
+location_by_method_info$location_by_method[location_by_method_info$mean_reads == max(location_by_method_info$mean_reads)]
+
+# ASV info
+min(location_by_method_info$mean_asvs)
+location_by_method_info$location_by_method[location_by_method_info$mean_asvs == min(location_by_method_info$mean_asvs)]
+max(location_by_method_info$mean_asvs)
+location_by_method_info$location_by_method[location_by_method_info$mean_asvs == max(location_by_method_info$mean_asvs)]
+
+## ASV exploration
+# add total read count and occurrence count to taxonomy
+taxonomy$final_read_count <- rowSums(count_table)[rownames(taxonomy)]
+taxonomy$pct_reads <- round(taxonomy$final_read_count / sum(count_table) * 100, 2)
+taxonomy$occurrence_count <- rowSums(count_table > 0)[rownames(taxonomy)]
+taxonomy$pct_occurrence <- round(taxonomy$occurrence_count / ncol(count_table) * 100, 2)
+
+# top 10 abundant ASVs
+abundant_asvs <- taxonomy %>%
+  slice_max(final_read_count, n = 10, with_ties = TRUE)
+abundant_asvs
+
+# top 10 frequent ASVs
+frequent_asvs <- taxonomy %>%
+  slice_max(occurrence_count, n = 10, with_ties = TRUE)
+frequent_asvs
+
+write.table(abundant_asvs, file = "Top 10 abundant zotus", quote = FALSE)
+write.table(frequent_asvs, file = "Top 10 frequent zotus", quote = FALSE)
