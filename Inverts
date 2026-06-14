@@ -1,0 +1,678 @@
+# Loading libraries we need in
+# needed for reading in and manipulating data
+library(ape)
+library(tidyverse)
+library(MASS)
+library(car)
+library(performance)
+library(emmeans)
+library(multcomp)
+library(UpSetR)
+library(ggraph)
+library(igraph)
+library(glmmTMB)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+##install.packages("phyloseq")
+library(phyloseq)
+
+
+# For plotting ellipses in PCOA etc
+library(ggforce)
+# For text labels on PCOA plots
+library(ggrepel)
+# necessary for some of the alpha diversity stats etc
+library(picante)
+# allows plots to be stacked
+library(patchwork)
+# For permanova
+library(indicspecies)
+
+
+##Set working directory
+setwd("G:/Other computers/My Laptop (1)/Documents/eDNA/Bugs/Japan_update_filtered")
+
+## read data into R
+metadata <- read.table(file.path("metadata_anyabugs.txt"), header = TRUE, sep = '\t', row.names = 1, check.names = FALSE, comment.char = '')
+count_table <- read.table(file.path("anya_bug_zotu_table.txt"), header = TRUE, sep = '\t', row.names = 1, check.names = FALSE, comment.char = '')
+phylo_tree <- read.nexus(file.path("annotated_tree_file_Ryan.tree"))
+taxonomy <- read.table(file.path("bugs_BLAST_filtered_taxonomy_11Sep2025.txt"), header = TRUE, row.names = 1, check.names = FALSE, comment.char = '')
+
+
+# Trim freqTable and phylo_tree to revised taxonomy file following BLAST
+trimmed_zotus <- row.names(taxonomy)
+phylo_tree <- prune_taxa(trimmed_zotus,phylo_tree)
+count_table <- count_table[(which(row.names(count_table) %in% trimmed_zotus)),]
+
+## ALANA ADDITIONS: what we care about is differences by method
+## but site will also have an influence, so we'll create a new
+## column which is location_by_method. We will also ditch 
+## sponge type 2 and rename sponge type 1 to sponge.
+## Because of this, instead of using rownames to make a new
+## column called sample, we'll use the columns in the dataframe
+metadata <- metadata %>% filter(method!="Sponge2") %>% 
+  mutate(method=ifelse(method=="Sponge1","Sponge",method)) %>% 
+  mutate(sample=paste(location,extraction_number,sep="")) %>% 
+  mutate(location_by_method=paste(location,method,sep="_")) %>%
+  dplyr::select(sample,location_by_method)
+
+rownames(metadata) <- NULL
+
+## Removing cols from count_table that have already been removed from metadata
+count_table <- count_table[,(which(colnames(count_table) %in% metadata$sample))]
+
+count_location <- count_table %>%
+  t() %>% as.data.frame() %>%
+  rownames_to_column("sample") %>% 
+  left_join(metadata, by = "sample") %>%
+  dplyr::select(-sample) %>%
+  group_by(location_by_method) %>%
+  summarise(across(everything(), sum, na.rm = TRUE)) %>%
+  mutate(across(-location_by_method, ~ if_else(.x > 0, 1, 0))) %>%
+  column_to_rownames("location_by_method") %>%
+  t() %>% as.data.frame()
+
+count_for_method_comparison <- count_location
+
+count_location[count_location == 0] <- NA
+column_names <- names(count_location)
+for (col in column_names) {
+  count_location[[col]] <- ifelse(count_location[[col]] == 1, col, count_location[[col]])
+}
+
+####NEW CODE ALANA ADDED TO DO PLOT OF PROPORTION ZOTUS FOUND BY METHOD
+Leith_present <- NULL
+for (i in 1:dim(count_for_method_comparison)[1]) {
+  if(1 %in% count_for_method_comparison[i,(which(grepl("Leith",colnames(count_for_method_comparison))))]) {
+    Leith_present <- c(Leith_present, 1) } else {
+      Leith_present <- c(Leith_present, 0)
+    }
+}
+
+Leith <- colSums(count_for_method_comparison[which(Leith_present==1),(which(grepl("Leith",colnames(count_for_method_comparison))))])/sum(Leith_present)
+
+Silverstream_present <- NULL
+for (i in 1:dim(count_for_method_comparison)[1]) {
+  if(1 %in% count_for_method_comparison[i,(which(grepl("Silverstream",colnames(count_for_method_comparison))))]) {
+    Silverstream_present <- c(Silverstream_present, 1) } else {
+      Silverstream_present <- c(Silverstream_present, 0)
+    }
+}
+
+Silverstream <- colSums(count_for_method_comparison[which(Silverstream_present==1),(which(grepl("Silverstream",colnames(count_for_method_comparison))))])/sum(Silverstream_present)
+
+Waitati_present <- NULL
+for (i in 1:dim(count_for_method_comparison)[1]) {
+  if(1 %in% count_for_method_comparison[i,(which(grepl("Waitati",colnames(count_for_method_comparison))))]) {
+    Waitati_present <- c(Waitati_present, 1) } else {
+      Waitati_present <- c(Waitati_present, 0)
+    }
+}
+
+Waitati <- colSums(count_for_method_comparison[which(Waitati_present==1),(which(grepl("Waitati",colnames(count_for_method_comparison))))])/sum(Waitati_present)
+
+taxa_proportion <- rbind(cbind(names(Leith),Leith), 
+                         cbind(names(Silverstream),Silverstream),
+                         cbind(names(Waitati), Waitati))
+
+colnames(taxa_proportion) <- c("sample","proportion of ZOTUs at each site found by method")
+
+taxa_proportion <- as_tibble(taxa_proportion)
+taxa_proportion$`proportion of ZOTUs at each site found by method` <- as.numeric(taxa_proportion$`proportion of ZOTUs at each site found by method`)
+
+taxa_proportion <- taxa_proportion %>% mutate(site=gsub("_.*","",sample)) %>% mutate(method=gsub(".*_","",sample))
+
+ggplot(taxa_proportion) + geom_point(mapping=aes(x=method,y=`proportion of ZOTUs at each site found by method`,fill=site), pch=21, size=3)
+
+ggplot(taxa_proportion) + geom_tile(mapping=aes(x=method,y=site,fill=`proportion of ZOTUs at each site found by method`), color="black") +
+  labs(fill="proportion of ZOTUs at each\nsite found by method") +
+  scale_fill_viridis()
+
+eDNA_heatmap <- ggplot(taxa_proportion) + geom_tile(mapping=aes(x=method,y=site,fill=`proportion of ZOTUs at each site found by method`), color="black") +
+  labs(fill="proportion of ZOTUs at each\nsite found by method") +
+  scale_fill_viridis() +
+  geom_text(mapping=aes(label=round(`proportion of ZOTUs at each site found by method`,2),x=method,y=site,))
+
+lm_proportion <- lm(`proportion of ZOTUs at each site found by method` ~ method, taxa_proportion)
+summary(lm_proportion)
+
+##LM and Beta Mixed Model for proportions
+
+# Prepare data by transforming and filtering proportions
+# Use existing taxa_proportion from previous steps
+if (!exists("taxa_proportion")) {
+  stop("taxa_proportion not found in the session. Please run the earlier data prep steps.")
+}
+
+tp <- taxa_proportion %>% 
+  mutate(prop = as.numeric(`proportion of ZOTUs at each site found by method`)) %>%
+  filter(!is.na(prop)) %>%
+  mutate(method = factor(method), site = factor(site))
+
+print("Head of prepared data (tp):")
+print(head(tp))
+
+# Fit a linear mixed model: method as fixed, site as random
+lmm_fit <- lmer(prop ~ method + (1|site), data = tp)
+print("LMM summary:")
+print(summary(lmm_fit))
+
+# Perform ANOVA on the linear mixed model (type II via car not needed; default is fine)
+print("ANOVA on LMM:")
+print(anova(lmm_fit))
+
+# EMMs and pairwise contrasts for the LMM
+emm_lmm <- emmeans(lmm_fit, ~ method)
+print("Estimated marginal means (LMM):")
+print(emm_lmm)
+print("Pairwise contrasts (LMM, Tukey-adjusted):")
+print(pairs(emm_lmm, adjust = "tukey"))
+
+# Transform proportions for beta regression
+n_obs <- nrow(tp)
+# Smithson & Verkuilen transformation
+tp$prop_beta <- (tp$prop * (n_obs - 1) + 0.5) / n_obs
+# Fallback clamp just in case
+eps <- 1e-4
+tp$prop_beta <- pmin(pmax(tp$prop_beta, eps), 1 - eps)
+
+print("Head with beta-transformed proportion:")
+print(head(tp[, c("site", "method", "prop", "prop_beta")]))
+
+###Beta Mixed Model
+# 1) Standardize column names (avoid backticks pain)
+# taxa_proportion should have columns: sample, proportion of ZOTUs..., site, method
+tp <- taxa_proportion %>%
+  rename(prop = `proportion of ZOTUs at each site found by method`) %>%
+  mutate(
+    prop = as.numeric(prop),
+    method = factor(method),
+    site = factor(site)
+  ) %>%
+  filter(!is.na(prop))
+
+# 2) Transform away from 0/1 for beta regression
+# Smithson & Verkuilen style shrink toward (0,1)
+n <- nrow(tp)
+tp <- tp %>%
+  mutate(prop_beta = (prop * (n - 1) + 0.5) / n)
+
+# Quick sanity check
+range(tp$prop, na.rm = TRUE)
+range(tp$prop_beta, na.rm = TRUE)  # should be strictly between 0 and 1
+
+# 3) Fit beta mixed model (site random intercept)
+bmm_fit <- glmmTMB(
+  prop_beta ~ method + (1 | site),
+  family = beta_family(link = "logit"),
+  data = tp
+)
+
+cat("\nBeta mixed model summary:\n")
+print(summary(bmm_fit))
+
+cat("\nANOVA (Type II Wald) for method:\n")
+print(car::Anova(bmm_fit, type = 2))
+
+# 4) Estimated marginal means on response scale + Tukey comparisons
+emm_bmm <- emmeans(bmm_fit, ~ method, type = "response")
+
+cat("\nEstimated marginal means (response scale):\n")
+print(emm_bmm)
+
+cat("\nPairwise comparisons (Tukey-adjusted, response scale):\n")
+print(pairs(emm_bmm, adjust = "tukey"))
+
+# 5) Plot EMMs with 95% CI on response scale
+emm_df <- as.data.frame(emm_bmm)
+
+p_bmm <- ggplot(emm_df, aes(x = method, y = response, ymin = asymp.LCL, ymax = asymp.UCL, fill = method)) +
+  geom_col(alpha = 0.85, color = "grey20") +
+  geom_errorbar(width = 0.15) +
+  theme_minimal() +
+  labs(
+    title = "Mixed-effects beta regression: Estimated means by method",
+    y = "Estimated proportion (mean)",
+    x = "Method"
+  ) +
+  theme(legend.position = "none")
+
+print(p_bmm)
+
+library(DHARMa)
+res <- simulateResiduals(bmm_fit)
+plot(res)
+testDispersion(res)
+testZeroInflation(res)
+
+car::Anova(bmm_fit, type = 2)
+
+emm_bmm
+pairs(emm_bmm, adjust="tukey")
+
+
+###Summary Stats###
+
+# 23AUG2025 RETAIN UNTIL WE FIGURE OUT WHAT PACKAGES NEEDED FOR NEXT SECTOIN - WILL WRITE THESE IN THE TOP AND THEN DELETE THIS BLOCK
+## load necessary R packages
+#for (pkg in c( "viridis", 
+#              "scales",  "indicspecies")) {
+#  if (!require(pkg, character.only = TRUE)) install.packages(pkg)
+#  library(pkg, character.only = TRUE)
+#  cat(pkg, "version:", as.character(packageVersion(pkg)), "\n")
+#}
+
+# Renaming count table names
+names(count_table) <- gsub("SpongeTypeOne","Sponge",names(count_table))
+
+## total number of reads and ASVs
+sum(count_table)
+nrow(count_table)
+ncol(count_table)
+
+## total number of reads per sample, mean/sd per dataset, and which samples have the minimum and maximum number of reads
+metadata$final_read_count <- colSums(count_table)[metadata$sample]
+mean(metadata$final_read_count, na.rm = TRUE)
+sd(metadata$final_read_count, na.rm = TRUE) / sqrt(sum(!is.na(metadata$final_read_count)))
+min(metadata$final_read_count)
+metadata$sample[metadata$final_read_count == min(metadata$final_read_count)]
+max(metadata$final_read_count)
+metadata$sample[metadata$final_read_count == max(metadata$final_read_count)]
+
+## number of ASVs per sample (rows in count_table with more than 0 reads), mean/sd per dataset, and which samples have min/max no of ASVs
+metadata$final_asv_count <- colSums(count_table > 0)[metadata$sample]
+mean(metadata$final_asv_count, na.rm = TRUE)
+sd(metadata$final_asv_count, na.rm = TRUE) / sqrt(sum(!is.na(metadata$final_asv_count)))
+min(metadata$final_asv_count)
+metadata$sample[metadata$final_asv_count == min(metadata$final_asv_count)]
+max(metadata$final_asv_count)
+metadata$sample[metadata$final_asv_count == max(metadata$final_asv_count)]
+
+## average number of reads and ASVs per location_by_method
+location_by_method_info <- metadata %>%
+  group_by(location_by_method) %>%
+  summarise(mean_reads = mean(final_read_count, na.rm = TRUE),
+            se_reads = sd(final_read_count, na.rm = TRUE) / sqrt(n()),
+            mean_asvs = mean(final_asv_count, na.rm = TRUE),
+            se_asvs = sd(final_asv_count, na.rm = TRUE) / sqrt(n()))
+
+# reads info
+min(location_by_method_info$mean_reads)
+location_by_method_info$location_by_method[location_by_method_info$mean_reads == min(location_by_method_info$mean_reads)]
+max(location_by_method_info$mean_reads)
+location_by_method_info$location_by_method[location_by_method_info$mean_reads == max(location_by_method_info$mean_reads)]
+
+# ASV info
+min(location_by_method_info$mean_asvs)
+location_by_method_info$location_by_method[location_by_method_info$mean_asvs == min(location_by_method_info$mean_asvs)]
+max(location_by_method_info$mean_asvs)
+location_by_method_info$location_by_method[location_by_method_info$mean_asvs == max(location_by_method_info$mean_asvs)]
+
+## ASV exploration
+# add total read count and occurrence count to taxonomy
+taxonomy$final_read_count <- rowSums(count_table)[rownames(taxonomy)]
+taxonomy$pct_reads <- round(taxonomy$final_read_count / sum(count_table) * 100, 2)
+taxonomy$occurrence_count <- rowSums(count_table > 0)[rownames(taxonomy)]
+taxonomy$pct_occurrence <- round(taxonomy$occurrence_count / ncol(count_table) * 100, 2)
+
+# top 10 abundant ASVs
+abundant_asvs <- taxonomy %>%
+  slice_max(final_read_count, n = 10, with_ties = TRUE)
+abundant_asvs
+
+# top 10 frequent ASVs
+frequent_asvs <- taxonomy %>%
+  slice_max(occurrence_count, n = 10, with_ties = TRUE)
+frequent_asvs
+
+write.table(abundant_asvs, file = "Top 10 abundant zotus", quote = FALSE)
+write.table(frequent_asvs, file = "Top 10 frequent zotus", quote = FALSE)
+
+####  Alpha diversity
+
+# format data to fit the analysis
+is.binary(phylo_tree)
+
+alpha_table <- as.data.frame(t(count_table))
+all(sort(phylo_tree$tip.label) == sort(colnames(alpha_table)))
+all(phylo_tree$tip.label == colnames(alpha_table))
+phylo_tree_clean <- match.phylo.comm(phy = phylo_tree, comm = alpha_table)$phy
+alpha_table_clean <- match.phylo.comm(phy = phylo_tree, comm = alpha_table)$comm
+all(phylo_tree_clean$tip.label == colnames(alpha_table_clean))
+
+# calculate Faith's PD and species richness (SR)
+alpha.PD <- pd(samp = alpha_table_clean, tree = phylo_tree_clean, include.root = FALSE)
+
+# check SR and PD correlation
+cor.test(alpha.PD$PD, alpha.PD$SR)
+plot(alpha.PD$PD, alpha.PD$SR, xlab = 'Phylogenetic Diversity', ylab = 'Species Richness', pch = 16)
+
+rownames(metadata) <- metadata$sample
+
+# add PD and SR to metadata
+metadata <- merge(metadata, alpha.PD[c("PD", "SR")], by = "row.names", all.x = TRUE)
+rownames(metadata) <- metadata$Row.names
+metadata$Row.names <- NULL
+
+##########################
+# NEW BOXPLOTS 10AUG2025 #
+##########################
+
+# prepare for plotting
+metadata <- metadata %>% mutate(location=gsub("_.*","",location_by_method)) %>% 
+  mutate(method=gsub(".*_","",location_by_method))
+metadata$sampleLocation <- factor(metadata$location, 
+                                  levels = c("Leith", "Silverstream", "Waitati"))
+metadata$method <- factor(metadata$method)
+sample_colors <- c("Sediment" = "brown", "Sponge" = "yellow", "Sterivex" = "red", 
+                   "Vacuum" = "orange", "Wilderlab" = "blue")
+
+# generate the SR boxplot
+boxplot.SR <- ggplot(metadata, aes(x = location, y = SR)) +
+  geom_boxplot(aes(fill = method, alpha = 0.5), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = method, fill = method), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = TRUE, pch=21) +
+  scale_fill_manual(values=sample_colors) +
+  scale_alpha(guide = "none") +
+  theme_minimal(base_size = 12) +
+  labs(title = "Species Richness, and Phylogenetic Alpha Diversity and Total Reads boxplot") +
+  theme(panel.grid.major.x = element_blank(), legend.position = "top",
+        plot.title = element_text(hjust = 0.5, face = "bold"), 
+        axis.title.x = element_blank(), axis.text.x = element_blank()) +
+  guides(shape = guide_legend(override.aes = list(size = 2, fill = "black")))
+boxplot.SR
+
+boxplot.PD <- ggplot(metadata, aes(x = location, y = PD)) +
+  geom_boxplot(aes(fill = method, alpha = 0.5), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = method, fill = method), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = FALSE, pch=21) +
+  scale_fill_manual(values=sample_colors) +
+  scale_alpha(guide = "none") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.x = element_blank(), legend.position = "top",
+        plot.title = element_text(hjust = 0.5, face = "bold"), 
+        axis.title.x = element_blank(), axis.text.x = element_blank()) +
+  guides(shape = guide_legend(override.aes = list(size = 2, fill = "black")))
+boxplot.PD
+
+boxplot.reads <- ggplot(metadata, aes(x = location, y = final_read_count)) +
+  geom_boxplot(aes(fill = method, alpha = 0.5), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = method, fill = method), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = TRUE, pch=21) +
+  scale_fill_manual(values=sample_colors) +
+  scale_alpha(guide = "none") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.x = element_blank(), legend.position = "none")
+boxplot.reads
+
+boxplots <-(boxplot.SR+ theme(plot.margin = unit(c(0,0,20,0), "pt"))) / (boxplot.PD + theme(plot.margin = unit(c(0,0,20,0), "pt"))) / boxplot.reads
+
+##boxplots <- boxplot.SR / boxplot.PD / boxplot.reads + plot_layout(guides = "keep")
+boxplots
+ggsave(filename = file.path("Figures", "alpha_boxplot_fish_location.png"), plot = boxplots, bg = "white", dpi = 600) 
+
+###########################################
+##Family level
+##########################################
+
+####  Alpha diversity
+
+# format data to fit the analysis
+is.binary(phylo_tree)
+
+alpha_table <- as.data.frame(t(count_table))
+all(sort(phylo_tree$tip.label) == sort(colnames(alpha_table)))
+all(phylo_tree$tip.label == colnames(alpha_table))
+phylo_tree_clean <- match.phylo.comm(phy = phylo_tree, comm = alpha_table)$phy
+alpha_table_clean <- match.phylo.comm(phy = phylo_tree, comm = alpha_table)$comm
+all(phylo_tree_clean$tip.label == colnames(alpha_table_clean))
+
+# Filtered taxonomy just in case we'd removed some of the zotus
+taxonomy_filtered <- taxonomy[(row.names(taxonomy) %in% phylo_tree_clean$tip.label),]
+
+zotu_family_representative <- NULL
+alpha_table_family <- NULL
+
+# Creating family level dataset
+for (i in unique(taxonomy_filtered$Family[!is.na(taxonomy_filtered$Family)])) {
+  temp_zotus <- row.names(taxonomy_filtered)[which(taxonomy_filtered$Family==i)]
+  if(length(temp_zotus)>1) {
+    temp_alpha <- as.matrix(rowSums(alpha_table_clean[,(colnames(alpha_table_clean) %in% temp_zotus)]))
+    colnames(temp_alpha) <- temp_zotus[1]
+    zotu_family_representative <- rbind(zotu_family_representative,cbind(i,temp_zotus[1]))
+  } else {
+    temp_alpha <- as.matrix(alpha_table_clean[,(which(colnames(alpha_table_clean)==temp_zotus))])
+    colnames(temp_alpha) <- temp_zotus
+    zotu_family_representative <- rbind(zotu_family_representative,cbind(i,temp_zotus))
+  }
+  alpha_table_family <- cbind(alpha_table_family, temp_alpha)
+}
+
+phylo_tree_family <- match.phylo.comm(phy = phylo_tree, comm = alpha_table_family)$phy
+
+
+# calculate Faith's PD and family richness (SR) by family
+alpha.PD <- pd(samp = alpha_table_clean, tree = phylo_tree_clean, include.root = FALSE)
+
+# calculate Faith's PD and family richness (SR) by family
+alpha.PD.family <- pd(samp = alpha_table_family, tree = phylo_tree_family, include.root = FALSE)
+
+# check SR and PD correlation by family
+cor.test(alpha.PD$PD, alpha.PD$SR)
+plot(alpha.PD$PD, alpha.PD$SR, xlab = 'Phylogenetic Diversity', ylab = 'family Richness', pch = 16)
+
+# check SR and PD correlation by family
+cor.test(alpha.PD.family$PD, alpha.PD.family$SR)
+plot(alpha.PD.family$PD, alpha.PD.family$SR, xlab = 'Phylogenetic Diversity', ylab = 'family Richness (Family)', pch = 16)
+
+rownames(metadata) <- metadata$sample
+
+# add PD and SR to metadata family
+metadata.family <- merge(metadata, alpha.PD[c("PD", "SR")], by = "row.names", all.x = TRUE)
+rownames(metadata.family) <- metadata.family$Row.names
+metadata.family$Row.names <- NULL
+
+# prepare for plotting family
+metadata.family <- metadata.family %>% mutate(location=gsub("_.*","",location_by_method)) %>% 
+  mutate(method=gsub(".*_","",location_by_method))
+metadata.family$sampleLocation <- factor(metadata.family$location, 
+                                         levels = c("Leith", "Silverstream", "Waitati"))
+metadata.family$method <- factor(metadata.family$method)
+sample_colors <- c("Sediment" = "brown", "Sponge" = "yellow", "Sterivex" = "red", 
+                   "Vacuum" = "orange", "Wilderlab" = "blue")
+
+# generate the SR boxplot family
+boxplot.SR.family <- ggplot(metadata.family, aes(x = method, y = SR)) +
+  geom_boxplot(aes(fill = location, alpha = 0.5), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = location, fill = location), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = TRUE, pch=21) +
+  scale_alpha(guide = "none") +
+  theme_minimal(base_size = 12) +
+  labs(title = "SR and PD alpha diversity boxplot by family") +
+  theme(panel.grid.major.x = element_blank(), legend.position = "top",
+        plot.title = element_text(hjust = 0.5, face = "bold"), 
+        axis.title.x = element_blank(), axis.text.x = element_blank()) +
+  guides(shape = guide_legend(override.aes = list(size = 2, fill = "black")))
+boxplot.SR.family
+
+
+boxplot.PD.family <- ggplot(metadata.family, aes(x = method, y = PD)) +
+  geom_boxplot(aes(fill = location, alpha = 0.5), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = location, fill = location), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = TRUE, pch=21) +
+  scale_alpha(guide = "none") +
+  scale_y_log10() + 
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.x = element_blank(), legend.position = "none")
+boxplot.PD.family
+
+boxplots.family <- boxplot.SR.family / boxplot.PD.family + plot_layout(guides = "keep")
+boxplots.family
+ggsave(filename = file.path("alpha_boxplot_bugs_family.png"), plot = boxplots.family, bg = "white", dpi = 600) 
+
+
+# add PD and SR to metadata family
+metadata.family <- merge(metadata, alpha.PD.family[c("PD", "SR")], by = "row.names", all.x = TRUE)
+rownames(metadata.family) <- metadata.family$Row.names
+metadata.family$Row.names <- NULL
+
+# prepare for plotting family
+metadata.family <- metadata.family %>% mutate(location=gsub("_.*","",location_by_method)) %>% 
+  mutate(method=gsub(".*_","",location_by_method))
+metadata.family$sampleLocation <- factor(metadata.family$location, 
+                                         levels = c("Leith", "Silverstream", "Waitati"))
+metadata.family$method <- factor(metadata.family$method)
+sample_colors <- c("Sediment" = "brown", "Sponge" = "yellow", "Sterivex" = "red", 
+                   "Vacuum" = "orange", "Wilderlab" = "blue")
+
+# generate the SR boxplot family
+boxplot.SR.family <- ggplot(metadata.family, aes(x = method, y = SR)) +
+  geom_boxplot(aes(fill = location, alpha = 0.5), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = location, fill = location), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = TRUE, pch=21) +
+  scale_alpha(guide = "none") +
+  theme_minimal(base_size = 12) +
+  labs(title = "SR and PD alpha diversity boxplot by Family") +
+  theme(panel.grid.major.x = element_blank(), legend.position = "top",
+        plot.title = element_text(hjust = 0.5, face = "bold"), 
+        axis.title.x = element_blank(), axis.text.x = element_blank()) +
+  guides(shape = guide_legend(override.aes = list(size = 2, fill = "black")))
+boxplot.SR.family
+
+
+boxplot.PD.family <- ggplot(metadata.family, aes(x = method, y = PD)) +
+  geom_boxplot(aes(fill = location, alpha = 0.5), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = location, fill = location), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = TRUE, pch=21) +
+  scale_alpha(guide = "none") +
+  scale_y_log10() + 
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.x = element_blank(), legend.position = "none")
+boxplot.PD.family
+
+boxplots.family <- boxplot.SR.family / boxplot.PD.family + plot_layout(guides = "keep")
+boxplots.family
+ggsave(filename = file.path("alpha_boxplot_bugs_family.png"), plot = boxplots.family, bg = "white", dpi = 600) 
+
+
+####Facet wrap#####
+#View(metadata)
+#
+#met2 <- rbind(metadata,metadata, metadata)
+#met2$Variable <- c(rep("SR",nrow(metadata)),rep("PD",nrow(metadata)),
+#                   rep("Total Reads",nrow(metadata)))
+
+#met2$val.variable <- c(metadata$SR, metadata$PD, metadata$final_read_count)
+#
+#boxplot.macro <- ggplot(met2, aes(x = method, y = val.variable)) +
+#  geom_boxplot(aes( alpha = 0.5, fill = method), outlier.shape = NA, show.legend = FALSE) +
+#  geom_point(aes(shape = location)) +
+#  geom_rect(aes())
+#  scale_alpha(guide = "none") +
+#  scale_y_log10() + 
+#  facet_grid(Variable ~ location , scale = "free")+
+#  theme_minimal(base_size = 12) +
+#  theme(panel.grid.major.x = element_blank(), legend.position = "none")
+
+#print(boxplot.macro)
+
+##########################
+# NEW BOXPLOTS 10AUG2025 #
+##########################
+
+# prepare for plotting family
+metadata.family <- metadata.family %>% mutate(location=gsub("_.*","",location_by_method)) %>% 
+  mutate(method=gsub(".*_","",location_by_method))
+metadata.family$sampleLocation <- factor(metadata.family$location, 
+                                         levels = c("Leith", "Silverstream", "Waitati"))
+metadata.family$method <- factor(metadata.family$method)
+sample_colors <- c("Sediment" = "brown", "Sponge" = "yellow", "Sterivex" = "red", 
+                   "Vacuum" = "orange", "Wilderlab" = "blue")
+
+# generate the SR boxplot family
+boxplot.SR.family <- ggplot(metadata.family, aes(x = location, y = SR)) +
+  geom_boxplot(aes(fill = method, alpha = 0.5), position = position_dodge(width = 0.8), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = method, fill = method), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = TRUE, pch=21) +
+  scale_fill_manual(values=sample_colors) +
+  scale_alpha(guide = "none") +
+  theme_minimal(base_size = 12) +
+  labs(title = "family Richness, Phylogenetic Alpha Diversity and Total Reads by family") +
+  theme(panel.grid.major.x = element_blank(), legend.position = "top",
+        plot.title = element_text(hjust = 0.5, face = "bold"), 
+        axis.title.x = element_blank(), axis.text.x = element_blank()) +
+  guides(shape = guide_legend(override.aes = list(size = 2, fill = "black")))
+boxplot.SR.family
+
+boxplot.PD.family <- ggplot(metadata.family, aes(x = location, y = PD)) +
+  geom_boxplot(aes(fill = method, alpha = 0.5), position = position_dodge(width = 0.8), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = method, fill = method), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = FALSE, pch=21) +
+  scale_fill_manual(values=sample_colors) +
+  scale_alpha(guide = "none") +
+  scale_y_log10() + 
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.x = element_blank(), legend.position = "top",
+        plot.title = element_text(hjust = 0.5, face = "bold"), 
+        axis.title.x = element_blank(), axis.text.x = element_blank()) +
+  guides(shape = guide_legend(override.aes = list(size = 2, fill = "black")))
+boxplot.PD.family
+
+boxplot.reads.family <- ggplot(metadata.family, aes(x = location, y = final_read_count)) +
+  geom_boxplot(aes(fill = method, alpha = 0.5), position = position_dodge(width = 0.8), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = method, fill = method), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = TRUE, pch=21) +
+  scale_fill_manual(values=sample_colors) +
+  scale_alpha(guide = "none") +
+  scale_y_log10() + 
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.x = element_blank(), legend.position = "none")
+boxplot.reads.family
+
+boxplots.family <- boxplot.SR.family / boxplot.PD.family / boxplot.reads.family + plot_layout(guides = "keep")
+boxplots.family
+ggsave(filename = file.path("Figures", "alpha_boxplot_bugs_location_family.png"), plot = boxplots.family, bg = "white", dpi = 600) 
+
+# prepare for plotting family
+metadata.family <- metadata.family %>% mutate(location=gsub("_.*","",location_by_method)) %>% 
+  mutate(method=gsub(".*_","",location_by_method))
+metadata.family$sampleLocation <- factor(metadata.family$location, 
+                                         levels = c("Leith", "Silverstream", "Waitati"))
+metadata.family$method <- factor(metadata.family$method)
+sample_colors <- c("Sediment" = "brown", "Sponge" = "yellow", "Sterivex" = "red", 
+                   "Vacuum" = "orange", "Wilderlab" = "blue")
+
+# generate the SR boxplot family
+boxplot.SR.family <- ggplot(metadata.family, aes(x = location, y = SR)) +
+  geom_boxplot(aes(fill = method, alpha = 0.5), position = position_dodge(width = 0.8), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = method, fill = method), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = TRUE, pch=21) +
+  scale_fill_manual(values=sample_colors) +
+  scale_alpha(guide = "none") +
+  theme_minimal(base_size = 12) +
+  labs(title = "family Richness, Phylogenetic Alpha Diversity and Total Reads by family") +
+  theme(panel.grid.major.x = element_blank(), legend.position = "top",
+        plot.title = element_text(hjust = 0.5, face = "bold"), 
+        axis.title.x = element_blank(), axis.text.x = element_blank()) +
+  guides(shape = guide_legend(override.aes = list(size = 2, fill = "black")))
+boxplot.SR.family
+
+boxplot.PD.family <- ggplot(metadata.family, aes(x = location, y = PD)) +
+  geom_boxplot(aes(fill = method, alpha = 0.5), position = position_dodge(width = 0.8), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = method, fill = method), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = FALSE, pch=21) +
+  scale_fill_manual(values=sample_colors) +
+  scale_alpha(guide = "none") +
+  scale_y_log10() + 
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.x = element_blank(), legend.position = "top",
+        plot.title = element_text(hjust = 0.5, face = "bold"), 
+        axis.title.x = element_blank(), axis.text.x = element_blank()) +
+  guides(shape = guide_legend(override.aes = list(size = 2, fill = "black")))
+boxplot.PD.family
+
+boxplot.reads.family <- ggplot(metadata.family, aes(x = location, y = final_read_count)) +
+  geom_boxplot(aes(fill = method, alpha = 0.5), position = position_dodge(width = 0.8), outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(shape = method, fill = method), position = position_jitterdodge(jitter.width = 0.1), size = 2, colour = "black", show.legend = TRUE, pch=21) +
+  scale_fill_manual(values=sample_colors) +
+  scale_alpha(guide = "none") +
+  scale_y_log10() + 
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.x = element_blank(), legend.position = "none")
+boxplot.reads.family
+
+boxplots.family <- boxplot.SR.family / boxplot.PD.family / boxplot.reads.family + plot_layout(guides = "keep")
+boxplots.family
+ggsave(filename = file.path("Figures", "alpha_boxplot_bugs_location_family.png"), plot = boxplots.family, bg = "white", dpi=600) 
+
